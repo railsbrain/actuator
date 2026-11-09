@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PWM Control</title>
+<style>
+  :root { --bg:#fff; --fg:#1a1a1a; --card:#f3f4f6; --accent:#2563eb; --muted:#6b7280; --danger:#dc2626; --ok:#16a34a; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#111418; --fg:#e5e7eb; --card:#1c2128; --accent:#60a5fa; --muted:#9ca3af; --danger:#f87171; --ok:#22c55e; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font:15px system-ui, sans-serif; }
+  header { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:16px; }
+  h1 { font-size:20px; margin:0 auto 0 0; }
+  button, input, select { font:inherit; color:inherit; background:var(--card); border:1px solid var(--muted); border-radius:6px; padding:6px 10px; }
+  button { cursor:pointer; }
+  button.danger { background:var(--danger); color:#fff; border-color:var(--danger); }
+  button.ok { background:var(--ok); color:#fff; border-color:var(--ok); }
+  #grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:12px; align-items:start; }
+  .ch { background:var(--card); border-radius:10px; padding:12px; }
+  .ch .top { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px; }
+  .ch .top b { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ch .val { color:var(--muted); font-variant-numeric:tabular-nums; margin-left:auto; }
+  input[type=range] { width:100%; accent-color:var(--accent); padding:0; }
+  details { margin-top:8px; font-size:13px; }
+  summary { cursor:pointer; color:var(--muted); }
+  .cal { display:grid; gap:6px; margin-top:8px; }
+  .cal .row { display:flex; gap:6px; align-items:center; }
+  .cal .row button { flex:1; padding:4px 6px; }
+  .cal input[type=text] { width:100%; }
+  .cal label { display:flex; gap:6px; align-items:center; }
+  #freq { width:80px; }
+  #status { color:var(--muted); font-size:13px; }
+  #hint { color:var(--muted); font-size:13px; margin:-8px 0 12px; }
+  #wf { margin-top:28px; background:var(--card); border-radius:10px; padding:16px; }
+  #wf h2 { font-size:17px; margin:0 0 12px; }
+  .wfbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:12px; }
+  .wfbar input[type=number] { width:70px; }
+  #steps { display:grid; gap:8px; margin-bottom:12px; }
+  .step { display:grid; grid-template-columns:auto 1fr auto; gap:6px 10px; align-items:center; background:var(--bg); border-radius:8px; padding:8px; }
+  .step .idx { font-weight:600; color:var(--muted); }
+  .step .fields { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .step .fields input[type=text] { width:130px; }
+  .step .fields input[type=number] { width:80px; }
+  .step .tg { grid-column:2 / 4; color:var(--muted); font-size:13px; }
+  .step .tg label { display:flex; gap:4px; align-items:center; }
+  .step .btns { display:flex; gap:4px; }
+  .step .btns button { padding:4px 8px; }
+  #wfstatus { color:var(--muted); font-size:13px; }
+  #wfstatus.err { color:var(--danger); }
+  .chips { display:flex; flex-wrap:wrap; gap:4px; align-items:center; margin-bottom:12px; }
+  .chips button { padding:3px 9px; min-width:34px; }
+  .chips button.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .step .tg { display:flex; flex-wrap:wrap; gap:8px; }
+  .step .tg input { width:72px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>PCA9685 PWM</h1>
+  <label>Mode
+    <select id="mode">
+      <option value="servo">Servo (µs)</option>
+      <option value="angle">Angle (°)</option>
+      <option value="duty">Duty (%)</option>
+    </select>
+  </label>
+  <label>Freq <input id="freq" type="number" min="24" max="1526" value="50"> Hz</label>
+  <button id="setfreq">Set</button>
+  <button id="alloff" class="danger">All off</button>
+  <span id="status"></span>
+</header>
+<div id="hint">To calibrate: use Servo (µs) mode, move a servo to its safe limits, and press Set min / Set max under "Calibrate", then enter the angle range between them (e.g. 180). Angle mode then uses degrees: 0° = min, range = max.</div>
+<div id="grid"></div>
+
+<section id="wf">
+  <h2>Workflows</h2>
+  <div class="wfbar">
+    <select id="wfsel"></select>
+    <input id="wfname" type="text" placeholder="Workflow name" maxlength="40">
+    <label>Repeat <input id="wfrepeat" type="number" min="0" max="10000" value="1"> <small>(0 = loop)</small></label>
+    <button id="wfsave">Save</button>
+    <button id="wfrun" class="ok">▶ Run</button>
+    <button id="wfstop">■ Stop</button>
+    <button id="wfdel">Delete</button>
+    <span id="wfstatus"></span>
+  </div>
+  <div class="chips"><span>Channels in this workflow:</span><span id="wfch" class="chips" style="margin:0"></span></div>
+  <div id="steps"></div>
+  <button id="addstep">+ Add step from current positions</button>
+  <div id="hint2" style="color:var(--muted);font-size:13px;margin-top:8px">
+    1) Pick the channels this workflow controls. 2) Move the servos where you want them and press "Add step" to record the selected channels as a waypoint; repeat for each point (e.g. start → middle → end). 3) Fine-tune any angle (degrees) directly in the step. A selected channel that is switched off is recorded at mid-range. Channels you don't select are never touched.
+  </div>
+</section>
+
+<script>
+const grid = document.getElementById('grid');
+const modeSel = document.getElementById('mode');
+const status = document.getElementById('status');
+const rows = [];
+let cals = [];
+
+for (let i = 0; i < 16; i++) {
+  const el = document.createElement('div');
+  el.className = 'ch';
+  el.innerHTML = `
+    <div class="top"><b class="name">CH ${i}</b><span class="val"></span><button class="off">Off</button></div>
+    <input type="range" class="slider">
+    <details><summary>Calibrate</summary>
+      <div class="cal">
+        <input type="text" class="calname" placeholder="Name (e.g. Pan)" maxlength="40">
+        <div class="row">
+          <button data-k="min_us"></button><button data-k="max_us"></button>
+        </div>
+        <div class="row"><small>Press a value to jump there. Set to current position:</small></div>
+        <div class="row">
+          <button data-set="min_us">Set min (0°)</button><button data-set="max_us">Set max</button>
+        </div>
+        <label>Range between min and max <input type="number" class="range" min="10" max="360" step="5" style="width:70px"> °</label>
+        <label><input type="checkbox" class="inv"> Invert direction</label>
+      </div>
+    </details>`;
+  grid.appendChild(el);
+  const r = {
+    i, el, us: 1500, off: false,
+    slider: el.querySelector('.slider'), val: el.querySelector('.val'), name: el.querySelector('.name'),
+    calname: el.querySelector('.calname'), inv: el.querySelector('.inv'), range: el.querySelector('.range'),
+  };
+  r.slider.addEventListener('input', () => { show(r); send(r); });
+  el.querySelector('.off').addEventListener('click', () => api(`/api/channel/${i}`, { duty: 0 }).then(apply));
+  el.querySelectorAll('[data-k]').forEach(b => b.addEventListener('click', () =>
+    api(`/api/channel/${i}`, { pulse_us: cals[i][b.dataset.k] }).then(apply)));
+  el.querySelectorAll('[data-set]').forEach(b => b.addEventListener('click', () => {
+    if (r.off) { status.textContent = 'Move the servo first (channel is off).'; return; }
+    saveCal(r, { [b.dataset.set]: Math.round(r.us) });
+  }));
+  r.calname.addEventListener('change', () => saveCal(r, { name: r.calname.value.trim() }));
+  r.inv.addEventListener('change', () => saveCal(r, { invert: r.inv.checked }));
+  r.range.addEventListener('change', () => saveCal(r, { range_deg: parseFloat(r.range.value) || 180 }));
+  rows.push(r);
+}
+
+const rangeOf = ch => (cals[ch] && cals[ch].range_deg) || 180;
+
+function configureSliders() {
+  const m = modeSel.value;
+  rows.forEach(r => {
+    r.slider.min = m === 'servo' ? 500 : 0;
+    r.slider.max = m === 'servo' ? 2500 : m === 'angle' ? rangeOf(r.i) : 100;
+    r.slider.step = m === 'servo' ? 10 : m === 'angle' ? 1 : 0.5;
+  });
+}
+
+function show(r) {
+  const m = modeSel.value, v = r.slider.value;
+  r.val.textContent = m === 'servo' ? `${v} µs` : m === 'angle' ? `${v}°` : `${v} %`;
+}
+
+async function api(path, body, method) {
+  try {
+    const res = await fetch(path, { method: method || (body ? 'POST' : 'GET'), headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+    if (!res.ok) {
+      let msg = await res.text();
+      try {
+        const d = JSON.parse(msg).detail;
+        msg = typeof d === 'string' ? d : d.map(x => `${(x.loc || []).slice(1).join('.')}: ${x.msg}`).join('; ');
+      } catch (_) { /* keep raw text */ }
+      throw new Error(msg);
+    }
+    status.textContent = '';
+    return res.json();
+  } catch (e) { status.textContent = 'Error: ' + e.message; throw e; }
+}
+
+const pending = {};
+function send(r) {
+  // Throttle to ~20 updates/s per channel; always send the latest value.
+  clearTimeout(pending[r.i]);
+  pending[r.i] = setTimeout(() => {
+    const v = parseFloat(r.slider.value), m = modeSel.value;
+    const body = m === 'servo' ? { pulse_us: v } : m === 'angle' ? { angle: v } : { duty: v / 100 };
+    api(`/api/channel/${r.i}`, body).then(s => { const c = s.channels[r.i]; r.us = c.pulse_us; r.off = c.duty === 0; });
+  }, 50);
+}
+
+function applyCals() {
+  rows.forEach(r => {
+    const c = cals[r.i];
+    r.name.textContent = c.name ? `CH ${r.i} · ${c.name}` : `CH ${r.i}`;
+    if (document.activeElement !== r.calname) r.calname.value = c.name;
+    r.inv.checked = c.invert;
+    if (document.activeElement !== r.range) r.range.value = c.range_deg;
+    r.el.querySelectorAll('[data-k]').forEach(b => {
+      b.textContent = b.dataset.k === 'min_us'
+        ? `min ${Math.round(c.min_us)} µs (0°)`
+        : `max ${Math.round(c.max_us)} µs (${c.range_deg}°)`;
+    });
+  });
+  configureSliders();
+}
+
+function saveCal(r, patch) {
+  const next = { ...cals[r.i], ...patch };
+  api(`/api/calibration/${r.i}`, next, 'PUT').then(all => { cals = all; applyCals(); api('/api/state').then(apply); });
+}
+
+let lastState = null;
+function apply(s) {
+  lastState = s;
+  document.getElementById('freq').value = Math.round(s.freq * 10) / 10;
+  const m = modeSel.value;
+  s.channels.forEach(c => {
+    const r = rows[c.ch];
+    r.us = c.pulse_us; r.off = c.duty === 0;
+    if (document.activeElement === r.slider) return;
+    if (m === 'servo') r.slider.value = r.off ? 1500 : c.pulse_us;
+    else if (m === 'angle') r.slider.value = r.off ? 0 : c.angle;
+    else r.slider.value = c.duty * 100;
+    r.val.textContent = r.off ? 'off'
+      : m === 'servo' ? `${Math.round(c.pulse_us)} µs`
+      : m === 'angle' ? `${Math.round(c.angle)}°`
+      : `${(c.duty * 100).toFixed(1)} %`;
+  });
+}
+
+modeSel.addEventListener('change', () => { configureSliders(); api('/api/state').then(apply); });
+document.getElementById('setfreq').addEventListener('click', () =>
+  api('/api/frequency', { hz: parseFloat(document.getElementById('freq').value) }).then(apply));
+document.getElementById('alloff').addEventListener('click', () => api('/api/off', {}).then(apply));
+
+// ---- Workflows ----
+const $ = id => document.getElementById(id);
+let workflows = {};
+let draft = { steps: [], repeat: 1, channels: [] };
+let wfRunning = false;
+const setRunning = on => $('wfstop').classList.toggle('danger', on);
+
+function wfMsg(text, isErr) {
+  const el = $('wfstatus');
+  el.textContent = text;
+  el.classList.toggle('err', !!isErr);
+}
+
+function chName(ch) { return cals[ch] && cals[ch].name ? `CH${ch} ${cals[ch].name}` : `CH${ch}`; }
+
+function renderChips() {
+  const box = $('wfch');
+  box.innerHTML = '';
+  for (let ch = 0; ch < 16; ch++) {
+    const b = document.createElement('button');
+    b.textContent = ch;
+    b.title = chName(ch);
+    b.className = draft.channels.includes(ch) ? 'on' : '';
+    b.addEventListener('click', () => toggleChannel(ch));
+    box.appendChild(b);
+  }
+}
+
+async function toggleChannel(ch) {
+  if (draft.channels.includes(ch)) {
+    draft.channels = draft.channels.filter(c => c !== ch);
+    draft.steps.forEach(st => { delete st.angles[ch]; });
+  } else {
+    draft.channels = [...draft.channels, ch].sort((a, b) => a - b);
+    // New channel joins every existing step at its current position (or centre if off).
+    const cur = (await readAngles([ch]))[ch];
+    draft.steps.forEach(st => { st.angles[ch] = cur; });
+  }
+  renderChips();
+  renderSteps();
+}
+
+function renderSteps() {
+  const box = $('steps');
+  box.innerHTML = '';
+  draft.steps.forEach((st, i) => {
+    const el = document.createElement('div');
+    el.className = 'step';
+    const vals = draft.channels.map(ch => `<label>${chName(ch)}
+        <input type="number" class="tv" data-ch="${ch}" min="0" max="${rangeOf(ch)}" step="1" value="${st.angles[ch] ?? rangeOf(ch) / 2}">°</label>`).join('');
+    el.innerHTML = `<span class="idx">${i + 1}</span>
+      <div class="fields">
+        <input type="text" class="lbl" placeholder="label" maxlength="40" value="${st.label.replace(/"/g, '&quot;')}">
+        <label>move <input type="number" class="dur" min="0" max="60000" step="100" value="${st.duration_ms}"> ms</label>
+        <label>hold <input type="number" class="hold" min="0" max="600000" step="100" value="${st.hold_ms}"> ms</label>
+      </div>
+      <div class="btns">
+        <button class="go" title="Run only this step">▶</button>
+        <button class="rec" title="Re-record this step from the current positions">⟳</button>
+        <button class="up" title="Move up">↑</button>
+        <button class="dn" title="Move down">↓</button>
+        <button class="rm" title="Delete step">✕</button>
+      </div>
+      <div class="tg">${vals || '<em>no channels selected</em>'}</div>`;
+    el.querySelector('.lbl').addEventListener('input', e => { st.label = e.target.value; });
+    el.querySelector('.dur').addEventListener('input', e => { st.duration_ms = parseInt(e.target.value) || 0; });
+    el.querySelector('.hold').addEventListener('input', e => { st.hold_ms = parseInt(e.target.value) || 0; });
+    el.querySelectorAll('.tv').forEach(inp => inp.addEventListener('input', e => {
+      st.angles[inp.dataset.ch] = Math.max(0, Math.min(rangeOf(inp.dataset.ch), parseFloat(e.target.value) || 0));
+    }));
+    el.querySelector('.go').addEventListener('click', () => runWorkflow(i));
+    el.querySelector('.rec').addEventListener('click', async () => {
+      st.angles = await readAngles(draft.channels, true);
+      renderSteps();
+    });
+    el.querySelector('.up').addEventListener('click', () => { if (i > 0) { [draft.steps[i - 1], draft.steps[i]] = [draft.steps[i], draft.steps[i - 1]]; renderSteps(); } });
+    el.querySelector('.dn').addEventListener('click', () => { if (i < draft.steps.length - 1) { [draft.steps[i + 1], draft.steps[i]] = [draft.steps[i], draft.steps[i + 1]]; renderSteps(); } });
+    el.querySelector('.rm').addEventListener('click', () => { draft.steps.splice(i, 1); renderSteps(); });
+    box.appendChild(el);
+  });
+}
+
+// Fresh angles (degrees) of the given channels; channels that are off read as mid-range.
+async function readAngles(chs, warn) {
+  const fresh = await api('/api/state');
+  lastState = fresh;
+  const t = {}, off = [];
+  chs.forEach(ch => {
+    const c = fresh.channels[ch];
+    if (c.duty > 0 && c.angle !== null) t[ch] = Math.round(c.angle * 10) / 10;
+    else { t[ch] = rangeOf(ch) / 2; off.push(ch); }
+  });
+  if (warn && off.length) wfMsg(`Off channels recorded at mid-range: ${off.map(chName).join(', ')}`);
+  return t;
+}
+
+function fillSelect(selected) {
+  const sel = $('wfsel');
+  sel.innerHTML = '<option value="">— new workflow —</option>' +
+    Object.keys(workflows).map(n => `<option value="${n.replace(/"/g, '&quot;')}">${n}</option>`).join('');
+  sel.value = selected || '';
+}
+
+function loadDraft(name) {
+  const wf = workflows[name];
+  draft = wf ? JSON.parse(JSON.stringify(wf)) : { steps: [], repeat: 1 };
+  draft.channels = [...new Set(draft.steps.flatMap(st => Object.keys(st.angles).map(Number)))].sort((a, b) => a - b);
+  $('wfname').value = name || '';
+  $('wfrepeat').value = draft.repeat;
+  renderChips();
+  renderSteps();
+}
+
+async function saveWorkflow() {
+  const name = $('wfname').value.trim();
+  if (!name) throw new Error('Give the workflow a name.');
+  if (!draft.channels.length) throw new Error('Select at least one channel.');
+  if (!draft.steps.length) throw new Error('Add at least one step.');
+  const body = { repeat: parseInt($('wfrepeat').value) || 0, steps: draft.steps };
+  workflows = await api(`/api/workflows/${encodeURIComponent(name)}`, body, 'PUT');
+  fillSelect(name);
+  wfMsg('Saved.');
+  return name;
+}
+
+async function runWorkflow(step) {
+  try {
+    const name = await saveWorkflow();
+    const q = step === undefined ? '' : `?step=${step}`;
+    await api(`/api/workflows/${encodeURIComponent(name)}/run${q}`, {});
+    pollWorkflow();
+  } catch (e) { wfMsg('⚠ ' + e.message, true); }
+}
+
+async function pollWorkflow() {
+  let s;
+  try { s = await api('/api/workflows/status'); } catch (e) { return; }
+  if (s.running) {
+    const st = s.step === null ? '' : ` · step ${s.step + 1}${s.label ? ' (' + s.label + ')' : ''} · round ${s.round}`;
+    wfMsg(`Running "${s.name}"${st}`);
+    api('/api/state').then(apply);
+    wfRunning = true;
+    setRunning(true);
+    setTimeout(pollWorkflow, 300);
+  } else {
+    setRunning(false);
+  }
+  if (!s.running && wfRunning) {
+    wfRunning = false;
+    if (s.error) wfMsg('⚠ Workflow failed: ' + s.error, true); else wfMsg('Finished.');
+    api('/api/state').then(apply);
+  }
+}
+
+$('wfsel').addEventListener('change', e => loadDraft(e.target.value));
+$('addstep').addEventListener('click', async () => {
+  try {
+    if (!draft.channels.length) {
+      // Nothing selected yet: start from the channels that are currently on.
+      const st = await api('/api/state');
+      draft.channels = st.channels.filter(c => c.duty > 0).map(c => c.ch);
+      if (!draft.channels.length) { wfMsg('⚠ Select the channels for this workflow first (or move a servo).', true); return; }
+      renderChips();
+    }
+    const t = await readAngles(draft.channels, true);
+    draft.steps.push({ label: draft.steps.length === 0 ? 'start' : `point ${draft.steps.length + 1}`, angles: t, duration_ms: 1000, hold_ms: 0 });
+    renderSteps();
+  } catch (e) { wfMsg('⚠ ' + e.message, true); }
+});
+$('wfsave').addEventListener('click', () => saveWorkflow().catch(e => wfMsg('⚠ ' + e.message, true)));
+$('wfrun').addEventListener('click', () => runWorkflow());
+$('wfstop').addEventListener('click', () => api('/api/workflows/stop', {}).then(() => { wfRunning = false; setRunning(false); wfMsg('Stopped.'); }).catch(e => wfMsg('⚠ ' + e.message, true)));
+$('wfdel').addEventListener('click', async () => {
+  const name = $('wfsel').value;
+  if (!name || !confirm(`Delete workflow "${name}"?`)) return;
+  workflows = await api(`/api/workflows/${encodeURIComponent(name)}`, undefined, 'DELETE');
+  fillSelect(''); loadDraft('');
+});
+
+api('/api/workflows').then(w => { workflows = w; fillSelect(''); renderChips(); renderSteps(); });
+api('/api/workflows/status').then(s => { if (s.running) pollWorkflow(); });
+
+configureSliders();
+api('/api/calibration').then(c => { cals = c; applyCals(); return api('/api/state'); }).then(apply);
+</script>
+</body>
+</html>

@@ -1,0 +1,30 @@
+[Unit]
+Description=PCA9685 PWM web control
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pwm
+Group=pwm
+SupplementaryGroups=i2c
+WorkingDirectory=/opt/orangepi-pwm
+# Calibration is saved here (/var/lib/pwm-web, owned by the service user)
+StateDirectory=pwm-web
+Environment=PWM_DATA_DIR=/var/lib/pwm-web
+# Settings live in /etc/default/pwm-web (PWM_I2C_BUS, PWM_I2C_ADDR, PWM_FREQ, PWM_PORT)
+EnvironmentFile=-/etc/default/pwm-web
+ExecStart=/bin/sh -c 'exec /opt/orangepi-pwm/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port "${PWM_PORT:-8000}"'
+Restart=always
+RestartSec=3
+# Stop quickly; the app turns all PWM outputs off on shutdown.
+TimeoutStopSec=10
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
