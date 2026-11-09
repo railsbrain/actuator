@@ -1,6 +1,6 @@
-# Orange Pi Zero 2W + PCA9685 web PWM control
+# Raspberry Pi / Orange Pi + PCA9685 web PWM control
 
-FastAPI service + single-page web UI (and a REST API) for driving a PCA9685 16-channel PWM board from an Orange Pi Zero 2W.
+FastAPI service + single-page web UI (and a REST API) for driving a PCA9685 16-channel PWM board from a Raspberry Pi or an Orange Pi (any board with a Raspberry Pi-compatible 40-pin header and a Linux I2C bus). Developed and tested on an Orange Pi Zero 2W.
 
 Features:
 - 16 channels, each with a slider in servo pulse width (µs), angle in degrees (calibrated) or duty (%)
@@ -9,20 +9,26 @@ Features:
 - adjustable PWM frequency and an "All off" button
 - runs as a systemd service (auto-start, auto-restart)
 
-Contents: [Wiring](#wiring) · [Powering servos](#powering-servos) · [Enable I2C](#enable-i2c-on-the-pi) · [Run](#run) · [Service](#run-as-a-linux-service-systemd) · [PWM basics](#pwm-basics) · [Calibration](#calibration) · [Workflows](#workflows) · [API](#api) · [Troubleshooting](#troubleshooting)
+Contents: [Wiring](#wiring) · [Powering servos](#powering-servos) · [Enable I2C](#enable-i2c-on-the-pi) · [Run](#run) · [Service](#run-as-a-linux-service-systemd) · [PWM basics](#pwm-basics) · [Calibration](#calibration) · [Workflows](#workflows) · [API](#api) · [Troubleshooting](#troubleshooting) · [Further reading](#further-reading)
 
 ## Wiring
 
-| PCA9685 | Orange Pi Zero 2W (40-pin header) |
+| PCA9685 | Raspberry Pi / Orange Pi (40-pin header) |
 |---|---|
 | VCC | pin 1 (3.3V) |
 | SDA | pin 3 |
 | SCL | pin 5 |
-| GND | pin 6 |
+| GND | pin 6 (any GND pin works) |
+| OE (output enable) | GND, or leave unconnected on most boards (see note below) |
 | V+ / GND screw terminal | **separate 5–6V supply** for servos/motors (its ground is common with the Pi via pin 6) |
 
 Servo on channel 0: signal (yellow/orange) → top pin, V+ (red) → middle pin, GND (black/brown) → bottom pin.
-Do not join the VCC pin (3.3V logic) to V+. Verify pins 3/5 are I2C in the Orange Pi manual.
+Do not join the VCC pin (3.3V logic) to V+.
+
+- **OE (output enable):** the outputs are active when OE is low. Tie it to GND to keep them always enabled, or wire it to a spare GPIO if you want a hardware way to mute all outputs. (This project does not drive OE; "All off" is done over I2C.)
+- **I2C address:** the default is `0x40`. The solder jumpers A0–A5 on the board change it (0x41 … 0x7F); if you change them, set `PWM_I2C_ADDR` to match.
+
+Pins 3/5 (SDA/SCL) are the standard I2C1 pins on Raspberry Pi. On Orange Pi boards, verify in the manual that pins 3/5 are I2C (they are on the Zero 2W header layout, which follows the Raspberry Pi pinout).
 
 ## Powering servos
 
@@ -31,11 +37,21 @@ The PCA9685 does not generate power: the V+ rail on the board is only an input t
 - **Recommended: separate 5–6V supply** on the blue `V+ / GND` screw terminal, with its ground common with the Pi (the GND wire on header pin 6 already does this). Required for several servos or large ones (MG996R etc.).
 - **One small servo (SG90 / MG90S) only**: connect the Pi's 5V pin (header pin 2 or 4) to the PCA9685 **V+ header pin** (next to `VCC`). Use a good USB-C supply (5V/3A), because servo current spikes (0.5–1 A when moving or stalled) can brown out and reboot the Pi. Add a 470–1000 µF capacitor across V+ and GND on the PCA9685.
 
+Rules of thumb:
+- Size the servo supply for **stall current**, roughly 1 A per small servo, and more for large ones.
+- Always tie the grounds together: Pi GND ↔ servo supply GND ↔ PCA9685 GND.
+- Keep `VCC` at 3.3V so the I2C signal levels match the Pi (most breakouts accept 3.3V or 5V on VCC).
+- Brownouts or reboots: add the bulk capacitor on V+, shorten the power wires, and check the supply's current rating.
+
 If the servo does not move at all, check first that the V+ rail is actually powered.
 
 ## Enable I2C on the Pi
 
-Run `sudo orangepi-config` → System → Hardware, enable the I2C overlay for the header pins you wired (or add it to `overlays=` in `/boot/orangepiEnv.txt`), reboot, then:
+**Raspberry Pi:** `sudo raspi-config` → Interface Options → I2C → enable, or non-interactively `sudo raspi-config nonint do_i2c 0` (or add `dtparam=i2c_arm=on` to `/boot/firmware/config.txt`; `/boot/config.txt` on older images) and reboot. The bus is normally `/dev/i2c-1`, so set `PWM_I2C_BUS=1`. Tutorials often also install `python3-smbus`; you don't need it here, because `smbus2` is installed from `requirements.txt`.
+
+**Orange Pi:** run `sudo orangepi-config` → System → Hardware, enable the I2C overlay for the header pins you wired (or add it to `overlays=` in `/boot/orangepiEnv.txt`), then reboot.
+
+Then, on either board:
 
 ```bash
 sudo apt install -y i2c-tools python3-venv
@@ -46,15 +62,15 @@ sudo i2cdetect -y 1   # try each bus number; PCA9685 shows up at 0x40 (and 0x70)
 Use the bus number that shows `40` as `PWM_I2C_BUS`.
 
 Notes:
-- If `/dev/i2c-0` does not exist, I2C is not enabled for those pins yet. List the available overlays with `ls /boot/dtb/allwinner/overlay/ | grep -i i2c`, then add the matching name (without the `sun50i-h616-` prefix and `.dtbo` suffix, e.g. `ph-i2c3`) to `overlays=` in `/boot/orangepiEnv.txt` and reboot.
-- Extra buses such as `/dev/i2c-20` and `/dev/i2c-21` are usually internal (HDMI/DDC etc.). On the tested board the PCA9685 was on `/dev/i2c-1`.
+- If the bus you expect (e.g. `/dev/i2c-0` or `/dev/i2c-1`) does not exist, I2C is not enabled for those pins yet. On Orange Pi, list the available overlays with `ls /boot/dtb/allwinner/overlay/ | grep -i i2c`, then add the matching name (without the `sun50i-h616-` prefix and `.dtbo` suffix, e.g. `ph-i2c3`) to `overlays=` in `/boot/orangepiEnv.txt` and reboot. The names differ per SoC and board.
+- Extra buses such as `/dev/i2c-20` and `/dev/i2c-21` are usually internal (HDMI/DDC etc.). On the tested Orange Pi Zero 2W the PCA9685 was on `/dev/i2c-1`.
 
 ## Run
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
-PWM_I2C_BUS=0 uvicorn app.main:app --host 0.0.0.0 --port 8000
+PWM_I2C_BUS=1 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 Open `http://<pi-ip>:8000`. For development without hardware: `PWM_MOCK=1`.
@@ -164,12 +180,20 @@ sudo journalctl -u pwm-web -n 30 --no-pager
 |---|---|
 | `FileNotFoundError ... /dev/i2c-0` | The bus is not enabled or has another number. See [Enable I2C](#enable-i2c-on-the-pi), then set `PWM_I2C_BUS` in `/etc/default/pwm-web` and restart. |
 | `cannot open PCA9685 ... Remote I/O error` / `No such device` | The bus exists but the chip does not answer. Check wiring (SDA/SCL swapped? GND? VCC?) with `sudo i2cdetect -y N`. The app exits at startup if the PCA9685 is not found, so the page never comes up. |
+| No device (`40`) in `i2cdetect` | I2C not enabled, wrong pins, a bad cable, or the address was changed with the A0–A5 jumpers (scan again and use the address that shows up as `PWM_I2C_ADDR`). |
+| `Remote I/O error` or hangs while running | Missing common ground, or a loose SDA/SCL wire. |
+| Servo jitters | Underpowered or noisy supply: add the bulk capacitor on V+, use shorter wires, and make sure the frequency is 50 Hz. |
+| Angles are off | Re-do the calibration: set min and max to the servo's real end points and enter its real range (see [Calibration](#calibration)). |
 | `Permission denied` on `/dev/i2c-N` | Run `ls -l /dev/i2c-N`: the group should be `i2c`. Run `sudo udevadm trigger` or reboot. |
 | Servo does not move, UI works | The V+ rail is not powered, wrong channel, or the signal/power/ground wires are in the wrong order. |
 | Servo buzzes or twitches at an end | The limit is beyond its mechanical range. Recalibrate min/max. |
 | Pi reboots when a servo moves | Power dip. Use a separate supply, or a bigger supply plus a capacitor. |
 | Workflow runs but nothing moves | All steps have the same value for the channel (check the numbers in each step), or the channel isn't selected. Remember to hard-refresh the page after updating the service so you get the current UI. |
 | Page unreachable | `curl localhost:8000/api/state` on the Pi; if that works, check you are on the same subnet, that the router has no AP/client isolation, and that no VPN captures the subnet (`route -n get <pi-ip>` on a Mac). |
+
+## Further reading
+
+- [How to connect a PCA9685 to a Raspberry Pi](https://medium.com/@pqshedy33/how-to-connect-pca9685-to-raspberry-pi-481d11b1f60f) (Medium): a short walkthrough of the wiring, enabling I2C, power and safety tips and quick troubleshooting for the same board. The wiring, power and troubleshooting sections above incorporate its main points. Its Python code uses a different library than this project (it refers to a `set_pulse_width_range` call, whose job is done here by the calibration), but its advice on pins and power applies directly.
 
 ## Security
 
