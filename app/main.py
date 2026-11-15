@@ -33,7 +33,8 @@ class Calibration(BaseModel):
     center_us: float = Field(1500, ge=100, le=3000)
     max_us: float = Field(2500, ge=100, le=3000)
     invert: bool = False
-    # Angle range in degrees: 0° = min_us, range_deg = max_us.
+    # Angle range in degrees: 0° = min_us, range_deg = max_us. min_us may be larger than max_us
+    # (e.g. a servo mounted the other way round); the two only have to differ.
     range_deg: float = Field(180, ge=10, le=360)
     # Button-press actions (servo pushes a physical button): default hold times.
     short_press_ms: int = Field(300, ge=20, le=10_000)
@@ -43,10 +44,11 @@ class Calibration(BaseModel):
 
     @model_validator(mode="after")
     def ordered(self):
-        if not self.min_us < self.max_us:
-            raise ValueError("need min_us < max_us")
-        # center_us is only used by the legacy `position` API; keep it inside the range.
-        self.center_us = min(max(self.center_us, self.min_us), self.max_us)
+        if self.min_us == self.max_us:
+            raise ValueError("min_us and max_us must be different")
+        # center_us is only used by the legacy `position` API; keep it between the two points.
+        lo, hi = sorted((self.min_us, self.max_us))
+        self.center_us = min(max(self.center_us, lo), hi)
         return self
 
 
@@ -76,14 +78,21 @@ def position_to_us(cal: Calibration, pos: float) -> float:
 
 
 def us_to_position(cal: Calibration, us: float) -> float:
-    span = (cal.max_us - cal.center_us) if us >= cal.center_us else (cal.center_us - cal.min_us)
-    pos = (us - cal.center_us) / span if span else 0.0
+    d = us - cal.center_us
+    to_max = cal.max_us - cal.center_us   # signed distance from center to each point
+    to_min = cal.center_us - cal.min_us
+    if to_max and d * to_max >= 0:        # on the side of the max point
+        pos = d / to_max
+    elif to_min:                          # on the side of the min point
+        pos = d / to_min
+    else:
+        pos = 0.0
     pos = max(-1.0, min(1.0, pos))
     return -pos if cal.invert else pos
 
 
 def angle_to_us(cal: Calibration, angle: float) -> float:
-    """0° = min_us ... range_deg = max_us (reversed when inverted)."""
+    """0° = min_us ... range_deg = max_us (reversed when inverted). Works whichever pulse is larger."""
     f = max(0.0, min(1.0, angle / cal.range_deg))
     if cal.invert:
         f = 1 - f

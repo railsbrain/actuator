@@ -114,7 +114,8 @@ Changing the frequency keeps each channel's pulse width constant.
 
 Every servo has slightly different end points and travel. Per channel you store a name, `min_us`, `max_us`, an **angle range** in degrees and an invert flag (saved to `calibration.json`; `/var/lib/pwm-web` when run as the service).
 
-- **0°** is the `min_us` pulse, and the **range** (default 180°) is the `max_us` pulse. Angles in between are linear in pulse width.
+- **0°** is the **Min position** (`min_us`), and the **range** (default 180°) is the **Max position** (`max_us`). Angles in between are linear in pulse width.
+- **The two points can be in any numeric order.** "Min" and "Max" are just the two ends you save, not the lower and higher pulse: if your servo is mounted the other way round, simply save the larger pulse as Min position (e.g. min 1550 µs, max 870 µs). They only have to differ. The ◀ / ▶ jog buttons and the Servo (µs) slider always work on the raw pulse width (◀ lowers it, ▶ raises it).
 - Angles are only as accurate as your range setting: if the servo really travels 160° between your min and max, enter 160.
 
 In the UI, expand **Calibrate** on the channel's card:
@@ -122,7 +123,7 @@ In the UI, expand **Calibrate** on the channel's card:
 2. Stop just before the mechanism's limit (back off if it buzzes or strains) and press **Set min position** (the servo's 0° end) or **Set max position**. The value saved is the pulse width at that moment.
 3. Enter the **Range** in degrees.
 
-You can also **type the positions directly** instead of jogging: use the **Min position** and **Max position** boxes (pulse width in µs, 100–3000, min must be lower than max) in the Calibrate panel. **Go to min / Go to max** jump the servo to the stored value so you can check it. Handy when you already know the values, or want to fine-tune by a few µs. Invalid values are rejected and the box returns to the stored value. Press the min/max buttons to jump there and check. Then use **Angle (°)** mode: the slider runs from 0 to the range and the servo never leaves the calibrated limits. **Invert direction** flips which end is 0°.
+You can also **type the positions directly** instead of jogging: use the **Min position** and **Max position** boxes (pulse width in µs, 100–3000, in any order but not equal) in the Calibrate panel. **Go to min position / Go to max position** jump the servo to the stored value so you can check it. Handy when you already know the values, or want to fine-tune by a few µs. Invalid values are rejected and the box returns to the stored value. Press the min/max buttons to jump there and check. Then use **Angle (°)** mode: the slider runs from 0 to the range and the servo never leaves the calibrated limits. **Invert direction** flips which end is 0°.
 
 If you change min, max or range later, angles stored in workflows keep their number but map to the new pulse widths.
 
@@ -151,7 +152,7 @@ Saved to `workflows.json` next to `calibration.json`. Workflows saved by an earl
 
 Use a servo as a robot finger on a physical button, e.g. a PC's power button, and trigger it from scripts and other tools with plain `curl`.
 
-- **Press** = the servo goes to the channel's **0° position** (the calibrated **min** pulse width), **release** = it goes to the end of its range (**max**). If the arm moves the wrong way (it lifts off the button instead of pushing it), tick **Invert direction** for that channel: press and release then swap. So calibrate the channel (see [Calibration](#calibration)): *Set min position* where the arm pushes the button, *Set max position* where it is clear of it.
+- **Press** = the servo goes to the channel's **0° position** (the **Min position**, whichever pulse width that is), **release** = it goes to the end of its range (the **Max position**). If the arm moves the wrong way (it lifts off the button instead of pushing it), either swap the two points (save the pressing position as Min position and the clear position as Max position, in any numeric order) or tick **Invert direction** for that channel, which swaps press and release. So calibrate the channel (see [Calibration](#calibration)): *Set min position* where the arm pushes the button, *Set max position* where it is clear of it.
 - **Short press** (`power`): press, hold briefly (default 300 ms), release. Use it to switch a machine on/off or to boot.
 - **Hard-boot** (`hard-boot`): a full forced restart in one call: press and hold the button for a long time (default **12 s**, which makes most computers force a power off), release, wait a short **gap** (default 1 s) so the machine can finish switching off, then do the normal short **power** press (the same time as `power`, default 300 ms) to switch it back on.
 - Times are set per channel in the UI (Calibrate → "Button-press actions": **Power**, **Hard-boot hold** and **Gap**, with **Test power / Test hard-boot** buttons) or via `short_press_ms`, `hard_boot_ms` and `hard_boot_gap_ms` in `PUT /api/calibration/{ch}`. Query parameters override them for one call: `hold_ms` (power) or `hold_ms` / `gap_ms` / `power_ms` (hard-boot).

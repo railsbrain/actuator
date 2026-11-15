@@ -168,31 +168,31 @@ for (let i = 0; i < 16; i++) {
       <div class="cal">
         <input type="text" class="calname" placeholder="Name (e.g. Pan)" maxlength="40">
 
-        <div class="sec">Jog <small>hold ◀ / ▶ to move toward min / max, release to stop (a click is only a tiny step)</small></div>
+        <div class="sec">Jog <small>hold ◀ to lower / ▶ to raise the pulse width, release to stop (a click is only a tiny step)</small></div>
         <div class="row jog">
-          <button class="jl" title="Hold to move toward min (lower µs)">◀</button>
-          <button class="jr" title="Hold to move toward max (higher µs)">▶</button>
+          <button class="jl" title="Hold to lower the pulse width (µs)">◀</button>
+          <button class="jr" title="Hold to raise the pulse width (µs)">▶</button>
           <select class="jogspd" title="Jog speed">
             <option value="fine">Fine</option><option value="normal" selected>Normal</option><option value="fast">Fast</option>
           </select>
           <span class="jogval"></span>
         </div>
 
-        <div class="sec">Positions <small>pulse width, 100–3000 µs · type a value, jump to it, or save the current position</small></div>
+        <div class="sec">Positions <small>pulse width, 100–3000 µs, any order · type a value, jump to it, or save the current position</small></div>
         <div class="pos">
-          <div class="ph"><b class="pmin">Min position (0°)</b><span><input type="number" class="minus" min="100" max="3000" step="5"> µs</span></div>
-          <div class="row"><button data-k="min_us">Go to min</button><button data-set="min_us">Set min position</button></div>
+          <div class="ph"><b class="pmin">Min position (0°, press)</b><span><input type="number" class="minus" min="100" max="3000" step="5"> µs</span></div>
+          <div class="row"><button data-k="min_us">Go to min position</button><button data-set="min_us">Set min position</button></div>
         </div>
         <div class="pos">
           <div class="ph"><b class="pmax">Max position</b><span><input type="number" class="maxus" min="100" max="3000" step="5"> µs</span></div>
-          <div class="row"><button data-k="max_us">Go to max</button><button data-set="max_us">Set max position</button></div>
+          <div class="row"><button data-k="max_us">Go to max position</button><button data-set="max_us">Set max position</button></div>
         </div>
         <div class="row opts">
           <label>Range between min and max <input type="number" class="range" min="10" max="360" step="5"> °</label>
-          <label><input type="checkbox" class="inv"> Invert direction</label>
+          <label title="Swaps which point is 0° and which is the range end (and press / release). Not needed if you simply enter min and max the other way round."><input type="checkbox" class="inv"> Invert direction</label>
         </div>
 
-        <div class="sec">Button press <small>press = 0° (the min position), release = max; Invert direction swaps them</small></div>
+        <div class="sec">Button press <small>press goes to the Min position, release to the Max position (Invert direction swaps them)</small></div>
         <div class="trio">
           <label>Power (ms)<input type="number" class="sp" min="20" max="10000" step="50"></label>
           <label>Hard-boot hold (ms)<input type="number" class="hb" min="1000" max="60000" step="500"></label>
@@ -355,7 +355,7 @@ function applyCals() {
     if (document.activeElement !== r.sp) r.sp.value = c.short_press_ms;
     if (document.activeElement !== r.hb) r.hb.value = c.hard_boot_ms;
     if (document.activeElement !== r.gp) r.gp.value = c.hard_boot_gap_ms;
-    r.pmax.textContent = `Max position (${c.range_deg}°)`;
+    r.pmax.textContent = `Max position (${c.range_deg}°, release)`;
   });
   configureSliders();
 }
