@@ -6,7 +6,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
 
@@ -35,6 +35,11 @@ class Calibration(BaseModel):
     invert: bool = False
     # Angle range in degrees: 0° = min_us, range_deg = max_us.
     range_deg: float = Field(180, ge=10, le=360)
+    # Button-press actions (servo pushes a physical button): default hold times.
+    short_press_ms: int = Field(300, ge=20, le=10_000)
+    # Hard boot = long press (force power off), release, wait the gap, then a short press (power on).
+    hard_boot_ms: int = Field(12_000, ge=1000, le=60_000)
+    hard_boot_gap_ms: int = Field(1000, ge=0, le=60_000)
 
     @model_validator(mode="after")
     def ordered(self):
@@ -241,6 +246,71 @@ class Runner:
 runner = Runner()
 
 
+class PressJob(threading.Thread):
+    """Push a physical button with a servo: go to 0° (press), hold, go to the range end (release).
+
+    0° is min_us, or max_us when the channel is inverted, so "Invert direction" flips the press direction.
+    `holds` is a list of hold times; between consecutive presses the job waits `gap_ms` (released).
+    The servo then stays driven at the release position. One job per channel at a time."""
+
+    def __init__(self, ch: int, action: str, holds: list[int], gap_ms: int = 0):
+        super().__init__(daemon=True)
+        cal = calibration[ch]
+        self.ch, self.action, self.holds, self.gap_ms = ch, action, holds, gap_ms
+        self.total_ms = sum(holds) + gap_ms * (len(holds) - 1)
+        self.press_us = angle_to_us(cal, 0)
+        self.release_us = angle_to_us(cal, cal.range_deg)
+        self.cancel = threading.Event()
+        self.phase = "starting"
+        self.step = 0
+        self.error = None
+
+    def _move(self, us: float) -> bool:
+        """Drive the servo; False if the job was cancelled (e.g. by All off) and nothing was moved."""
+        with lock:
+            if self.cancel.is_set():
+                self.phase = "cancelled"
+                return False
+            apply_us(self.ch, us)
+        return True
+
+    def run(self):
+        try:
+            for n, hold in enumerate(self.holds, 1):
+                self.step = n
+                if not self._move(self.press_us):
+                    return
+                self.phase = "pressed"
+                print(f"[press] CH{self.ch} {self.action} {n}/{len(self.holds)}: pressed at {self.press_us:.0f} us, holding {hold} ms", flush=True)
+                self.cancel.wait(hold / 1000)
+                if not self._move(self.release_us):
+                    return
+                print(f"[press] CH{self.ch} {self.action} {n}/{len(self.holds)}: released at {self.release_us:.0f} us", flush=True)
+                self.phase = "released"
+                if n < len(self.holds):
+                    self.phase = "waiting"
+                    self.cancel.wait(self.gap_ms / 1000)
+            self.phase = "done"
+        except Exception as e:  # e.g. I2C error
+            self.phase, self.error = "error", f"{type(e).__name__}: {e}"
+            print(f"[press] CH{self.ch} {self.action} FAILED: {self.error}", flush=True)
+        finally:
+            with presses_lock:
+                if presses.get(self.ch) is self:
+                    del presses[self.ch]
+
+
+presses: dict[int, PressJob] = {}
+presses_lock = threading.Lock()
+
+
+def cancel_presses() -> None:
+    with presses_lock:
+        jobs = list(presses.values())
+    for j in jobs:
+        j.cancel.set()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global dev
@@ -249,6 +319,7 @@ async def lifespan(app: FastAPI):
     dev = open_device(I2C_BUS, I2C_ADDR, DEFAULT_FREQ, MOCK)
     yield
     runner.stop()
+    cancel_presses()
     dev.close()
 
 
@@ -385,9 +456,69 @@ def run_workflow(name: str, step: int | None = None):
     return runner.status
 
 
+def run_press(ch: int, action: str, holds: list[int], gap_ms: int, wait: bool):
+    if not 0 <= ch <= 15:
+        raise HTTPException(404, "channel must be 0..15")
+    job = PressJob(ch, action, holds, gap_ms)
+    with presses_lock:
+        if ch in presses:
+            raise HTTPException(409, f"channel {ch} is already pressing ({presses[ch].action})")
+        presses[ch] = job
+    job.start()
+    if wait:
+        job.join(timeout=job.total_ms / 1000 + 5)
+    if job.error:
+        raise HTTPException(500, job.error)
+    return {
+        "channel": ch, "action": action, "holds_ms": holds, "gap_ms": gap_ms, "total_ms": job.total_ms,
+        "press_us": job.press_us, "release_us": job.release_us,
+        "state": job.phase if wait else "started",
+    }
+
+
+@app.post("/api/channel/{ch}/press")
+def press(ch: int, hold_ms: int = Query(300, ge=20, le=60_000), wait: bool = False):
+    """Press (go to 0°: min_us, or max_us if inverted), hold for hold_ms, release. wait=true blocks until released."""
+    return run_press(ch, "press", [hold_ms], 0, wait)
+
+
+@app.post("/api/channel/{ch}/power")
+def power(ch: int, hold_ms: int | None = Query(None, ge=20, le=60_000), wait: bool = False):
+    """Short press: power on/off. Duration = the channel's short_press_ms unless hold_ms is given."""
+    if not 0 <= ch <= 15:
+        raise HTTPException(404, "channel must be 0..15")
+    return run_press(ch, "power", [hold_ms or calibration[ch].short_press_ms], 0, wait)
+
+
+@app.post("/api/channel/{ch}/hard-boot")
+def hard_boot(
+    ch: int,
+    hold_ms: int | None = Query(None, ge=20, le=60_000, description="long press (force off); default hard_boot_ms"),
+    gap_ms: int | None = Query(None, ge=0, le=60_000, description="pause after releasing; default hard_boot_gap_ms"),
+    power_ms: int | None = Query(None, ge=20, le=60_000, description="final short press (power on); default short_press_ms"),
+    wait: bool = False,
+):
+    """Long press (default 12 s), release, wait the gap, then the short power press to switch the machine on."""
+    if not 0 <= ch <= 15:
+        raise HTTPException(404, "channel must be 0..15")
+    cal = calibration[ch]
+    holds = [hold_ms or cal.hard_boot_ms, power_ms or cal.short_press_ms]
+    return run_press(ch, "hard-boot", holds, cal.hard_boot_gap_ms if gap_ms is None else gap_ms, wait)
+
+
+@app.get("/api/presses")
+def active_presses():
+    with presses_lock:
+        return {
+            str(c): {"action": j.action, "phase": j.phase, "press": f"{j.step}/{len(j.holds)}", "total_ms": j.total_ms}
+            for c, j in presses.items()
+        }
+
+
 @app.post("/api/off")
 def all_off():
     runner.stop()  # before taking the lock: the runner thread needs it to finish
+    cancel_presses()
     with lock:
         dev.all_off()
         state["duty"] = [0.0] * 16

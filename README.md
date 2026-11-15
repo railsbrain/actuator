@@ -3,13 +3,14 @@
 FastAPI service + single-page web UI (and a REST API) for driving a PCA9685 16-channel PWM board from a Raspberry Pi or an Orange Pi (any board with a Raspberry Pi-compatible 40-pin header and a Linux I2C bus). Developed and tested on an Orange Pi Zero 2W.
 
 Features:
-- 16 channels, each with a slider in servo pulse width (µs), angle in degrees (calibrated) or duty (%)
+- 16 channels shown as 4 collapsible **layers** of 4 (the PCA9685's four connector blocks: CH 0–3, 4–7, 8–11, 12–15), each with a per-layer "Off" button and an "n of 4 on" indicator; each channel has a slider in servo pulse width (µs), angle in degrees (calibrated) or duty (%)
 - per-channel **calibration** (min / max pulse, angle range in degrees, name, invert)
 - **workflows**: named sequences of waypoints (start → middle → end) with move/hold times and repeat
+- **button-press actions** for robot fingers: a servo pushes a physical button (power / hard-boot) via a single `curl` call
 - adjustable PWM frequency and an "All off" button
 - runs as a systemd service (auto-start, auto-restart)
 
-Contents: [Wiring](#wiring) · [Powering servos](#powering-servos) · [Enable I2C](#enable-i2c-on-the-pi) · [Run](#run) · [Service](#run-as-a-linux-service-systemd) · [PWM basics](#pwm-basics) · [Calibration](#calibration) · [Workflows](#workflows) · [API](#api) · [Troubleshooting](#troubleshooting) · [Further reading](#further-reading)
+Contents: [Wiring](#wiring) · [Powering servos](#powering-servos) · [Enable I2C](#enable-i2c-on-the-pi) · [Run](#run) · [Service](#run-as-a-linux-service-systemd) · [PWM basics](#pwm-basics) · [Calibration](#calibration) · [Workflows](#workflows) · [Button press (power / hard-boot)](#button-press-power--hard-boot-for-other-tools) · [API](#api) · [Troubleshooting](#troubleshooting) · [Further reading](#further-reading)
 
 ## Wiring
 
@@ -116,7 +117,12 @@ Every servo has slightly different end points and travel. Per channel you store 
 - **0°** is the `min_us` pulse, and the **range** (default 180°) is the `max_us` pulse. Angles in between are linear in pulse width.
 - Angles are only as accurate as your range setting: if the servo really travels 160° between your min and max, enter 160.
 
-In the UI: switch to **Servo (µs)** mode, move a servo to a safe limit, expand **Calibrate** on its card and press **Set min** (the servo's 0° end) or **Set max**, then enter the **Range** in degrees. Press the min/max buttons to jump there and check. Then use **Angle (°)** mode: the slider runs from 0 to the range and the servo never leaves the calibrated limits. **Invert direction** flips which end is 0°.
+In the UI, expand **Calibrate** on the channel's card:
+1. **Jog** the servo with the **◀ / ▶ buttons**: **hold** a button to move the servo toward lower (◀) or higher (▶) pulse widths, **release** to stop it exactly where it is. A short tap makes one tiny step; holding for more than a third of a second moves continuously and gradually speeds up. The **Fine / Normal / Fast** selector sets the step size and speed, and the live readout shows the current pulse width. Space/Enter on a focused button works like pressing it. Jogging is limited to 500–2500 µs, and a channel that is off starts from 1500 µs.
+2. Stop just before the mechanism's limit (back off if it buzzes or strains) and press **Set min position** (the servo's 0° end) or **Set max position**. The value saved is the pulse width at that moment.
+3. Enter the **Range** in degrees.
+
+You can also **type the positions directly** instead of jogging: use the **Min position** and **Max position** boxes (pulse width in µs, 100–3000, min must be lower than max) in the Calibrate panel. **Go to min / Go to max** jump the servo to the stored value so you can check it. Handy when you already know the values, or want to fine-tune by a few µs. Invalid values are rejected and the box returns to the stored value. Press the min/max buttons to jump there and check. Then use **Angle (°)** mode: the slider runs from 0 to the range and the servo never leaves the calibrated limits. **Invert direction** flips which end is 0°.
 
 If you change min, max or range later, angles stored in workflows keep their number but map to the new pulse widths.
 
@@ -141,15 +147,57 @@ Calibrate the servos first, since angles are relative to the calibration. A chan
 
 Saved to `workflows.json` next to `calibration.json`. Workflows saved by an earlier version (calibrated −100…100 % positions in `targets`) are converted to angles automatically.
 
+## Button press (power / hard-boot) for other tools
+
+Use a servo as a robot finger on a physical button, e.g. a PC's power button, and trigger it from scripts and other tools with plain `curl`.
+
+- **Press** = the servo goes to the channel's **0° position** (the calibrated **min** pulse width), **release** = it goes to the end of its range (**max**). If the arm moves the wrong way (it lifts off the button instead of pushing it), tick **Invert direction** for that channel: press and release then swap. So calibrate the channel (see [Calibration](#calibration)): *Set min position* where the arm pushes the button, *Set max position* where it is clear of it.
+- **Short press** (`power`): press, hold briefly (default 300 ms), release. Use it to switch a machine on/off or to boot.
+- **Hard-boot** (`hard-boot`): a full forced restart in one call: press and hold the button for a long time (default **12 s**, which makes most computers force a power off), release, wait a short **gap** (default 1 s) so the machine can finish switching off, then do the normal short **power** press (the same time as `power`, default 300 ms) to switch it back on.
+- Times are set per channel in the UI (Calibrate → "Button-press actions": **Power**, **Hard-boot hold** and **Gap**, with **Test power / Test hard-boot** buttons) or via `short_press_ms`, `hard_boot_ms` and `hard_boot_gap_ms` in `PUT /api/calibration/{ch}`. Query parameters override them for one call: `hold_ms` (power) or `hold_ms` / `gap_ms` / `power_ms` (hard-boot).
+
+```bash
+# short press on channel 0 (returns immediately; the servo releases by itself)
+curl -X POST http://<pi-ip>:8000/api/channel/0/power
+
+# hard-boot: 12 s press, release, 1 s gap, 0.3 s power press. Takes ~13.3 s; wait=true blocks until done
+curl -X POST 'http://<pi-ip>:8000/api/channel/0/hard-boot?wait=true'
+
+# hard-boot with other times: 8 s hold, 2 s gap, 0.5 s power press
+curl -X POST 'http://<pi-ip>:8000/api/channel/0/hard-boot?hold_ms=8000&gap_ms=2000&power_ms=500&wait=true'
+
+# custom hold time: 1.5 s press on channel 2
+curl -X POST 'http://<pi-ip>:8000/api/channel/2/press?hold_ms=1500&wait=true'
+
+# which presses are in progress right now
+curl http://<pi-ip>:8000/api/presses
+```
+
+Responses are JSON, e.g. `{"channel":0,"action":"hard-boot","holds_ms":[12000,300],"gap_ms":1000,"total_ms":13300,"press_us":1000.0,"release_us":2000.0,"state":"started"}`. With `wait=true` the call returns after the last release (`"state":"done"`); the request takes about `total_ms`, so use a client timeout above that (for the default hard-boot, more than 14 s). While a hard-boot runs, `GET /api/presses` shows its phase (`pressed`, `waiting`) and which press it is on (`1/2`, `2/2`). `curl -f` makes HTTP errors fail the command:
+
+| HTTP | Meaning |
+|---|---|
+| 200 | Press started (or finished, with `wait=true`) |
+| 404 | Channel is not 0–15 |
+| 409 | That channel is already pressing; presses on different channels can run at the same time |
+| 422 | Invalid value (e.g. `hold_ms` outside 20–60000, or a hard-boot hold below 1000 ms in the settings) |
+| 500 | Hardware error such as an I2C failure (with `wait=true`; otherwise it is logged) |
+
+Things to know:
+- After a press the servo stays **driven at the release (max) position**, holding the arm clear of the button. When the service starts or stops, or you press **All off**, all outputs are switched off and the servo goes limp, so the arm may drop onto the button. Mount the arm so that gravity doesn't press the button, or send a release/press call after boot. **All off** also cancels a press or hard-boot in progress (at any point, including the gap) without releasing it.
+- The first call after boot makes the servo jump straight to the press position.
+- Anyone who can reach the API can power-cycle your machine (see [Security](#security)).
+
 ## API
 
 Interactive docs: `http://<pi-ip>:8000/docs`
 
 - `GET /api/state`
 - `POST /api/channel/{0-15}` with exactly one of `{"angle": 90}` (degrees, calibrated), `{"pulse_us": 1500}`, `{"duty": 0.5}` (0 = output off) or the legacy `{"position": -1..1}`. `GET /api/state` returns each channel's `angle` (null when off).
-- `GET /api/calibration`, `PUT /api/calibration/{0-15}` body `{"name":"Pan","min_us":1000,"max_us":2000,"range_deg":180,"invert":false}`
+- `GET /api/calibration`, `PUT /api/calibration/{0-15}` body `{"name":"Pan","min_us":1000,"max_us":2000,"range_deg":180,"invert":false,"short_press_ms":300,"hard_boot_ms":12000,"hard_boot_gap_ms":1000}`
 - `GET /api/workflows`, `PUT /api/workflows/{name}`, `DELETE /api/workflows/{name}`
 - `POST /api/workflows/{name}/run` (optional `?step=N` runs a single step, 0-based), `POST /api/workflows/stop`, `GET /api/workflows/status`
+- `POST /api/channel/{0-15}/press?hold_ms=300&wait=false`, `.../power` (short), `.../hard-boot` (12 s press, release, short power press), `GET /api/presses`: see [Button press](#button-press-power--hard-boot-for-other-tools)
 - `POST /api/frequency` body `{"hz": 50}`
 - `POST /api/off`
 

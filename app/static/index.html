@@ -17,7 +17,19 @@
   button { cursor:pointer; }
   button.danger { background:var(--danger); color:#fff; border-color:var(--danger); }
   button.ok { background:var(--ok); color:#fff; border-color:var(--ok); }
-  #grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:12px; align-items:start; }
+  #grid { display:grid; gap:14px; }
+  .group { border:1px solid rgba(128,128,128,.35); border-radius:12px; padding:10px 12px 12px; }
+  .ghead { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:10px; }
+  .ghead b { font-size:15px; }
+  .ghead .gsub, .ghead .gcount { color:var(--muted); font-size:13px; }
+  .ghead .gcount { margin-left:auto; }
+  .ghead button { padding:3px 10px; }
+  .gbody { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:12px; align-items:start; }
+  .group.collapsed .gbody { display:none; }
+  .group.collapsed .ghead { margin-bottom:0; }
+  .group.active { border-color:var(--accent); }
+  @media (max-width: 1100px) { .gbody { grid-template-columns:repeat(2, minmax(0,1fr)); } }
+  @media (max-width: 560px)  { .gbody { grid-template-columns:minmax(0,1fr); } }
   .ch { background:var(--card); border-radius:10px; padding:12px; }
   .ch .top { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px; }
   .ch .top b { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -28,6 +40,21 @@
   .cal { display:grid; gap:6px; margin-top:8px; }
   .cal .row { display:flex; gap:6px; align-items:center; }
   .cal .row button { flex:1; padding:4px 6px; }
+  .cal .jog button { font-size:18px; padding:6px; touch-action:none; user-select:none; -webkit-user-select:none; }
+  .cal .jog button:active, .cal .jog button.held { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .cal .jog select { padding:6px; }
+  .cal .sec { font-weight:600; font-size:13px; margin-top:8px; }
+  .cal .sec small { font-weight:400; color:var(--muted); margin-left:4px; }
+  .cal .pos { border:1px solid rgba(128,128,128,.3); border-radius:8px; padding:8px; display:grid; gap:6px; }
+  .cal .ph { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; }
+  .cal .ph span { display:flex; gap:4px; align-items:center; }
+  .cal .ph input { width:84px; }
+  .cal .opts { flex-wrap:wrap; justify-content:space-between; }
+  .cal .opts input[type=number] { width:64px; }
+  .cal .trio { display:grid; grid-template-columns:repeat(auto-fit, minmax(88px, 1fr)); gap:8px; align-items:end; }
+  .cal .trio label { flex-direction:column; align-items:flex-start; gap:2px; font-size:12px; color:var(--muted); }
+  .cal .trio input { width:100%; }
+  .cal .jogval { min-width:62px; text-align:right; color:var(--muted); font-variant-numeric:tabular-nums; }
   .cal input[type=text] { width:100%; }
   .cal label { display:flex; gap:6px; align-items:center; }
   #freq { width:80px; }
@@ -71,7 +98,7 @@
   <button id="alloff" class="danger">All off</button>
   <span id="status"></span>
 </header>
-<div id="hint">To calibrate: use Servo (µs) mode, move a servo to its safe limits, and press Set min / Set max under "Calibrate", then enter the angle range between them (e.g. 180). Angle mode then uses degrees: 0° = min, range = max.</div>
+<div id="hint">To calibrate: open "Calibrate" on a channel, hold ◀ / ▶ to creep the servo toward a safe limit (release to stop), then press Set min position / Set max position, then enter the angle range between them (e.g. 180). Angle mode then uses degrees: 0° = min, range = max.</div>
 <div id="grid"></div>
 
 <section id="wf">
@@ -99,7 +126,37 @@ const grid = document.getElementById('grid');
 const modeSel = document.getElementById('mode');
 const status = document.getElementById('status');
 const rows = [];
+const groups = [];
 let cals = [];
+
+// The PCA9685 has 4 connector blocks of 4 channels; show them as 4 layers.
+let collapsed = [];
+try { collapsed = JSON.parse(localStorage.getItem('pwm.collapsed') || '[]'); } catch (e) { /* storage unavailable */ }
+for (let g = 0; g < 4; g++) {
+  const el = document.createElement('section');
+  el.className = 'group' + (collapsed.includes(g) ? ' collapsed' : '');
+  el.innerHTML = `<div class="ghead">
+      <button class="gtoggle" title="Collapse / expand"></button>
+      <b>Layer ${g + 1}</b><span class="gsub">CH ${4 * g}–${4 * g + 3}</span>
+      <span class="gcount"></span>
+      <button class="goff" title="Switch off all four channels of this layer">Off</button>
+    </div><div class="gbody"></div>`;
+  grid.appendChild(el);
+  const G = { g, el, body: el.querySelector('.gbody'), count: el.querySelector('.gcount'), toggle: el.querySelector('.gtoggle') };
+  const sync = () => { G.toggle.textContent = el.classList.contains('collapsed') ? '▸' : '▾'; };
+  sync();
+  G.toggle.addEventListener('click', () => {
+    el.classList.toggle('collapsed'); sync();
+    const now = groups.filter(x => x.el.classList.contains('collapsed')).map(x => x.g);
+    try { localStorage.setItem('pwm.collapsed', JSON.stringify(now)); } catch (e) { /* ignore */ }
+  });
+  el.querySelector('.goff').addEventListener('click', async () => {
+    let st;
+    for (let ch = 4 * g; ch < 4 * g + 4; ch++) st = await api(`/api/channel/${ch}`, { duty: 0 });
+    apply(st);
+  });
+  groups.push(G);
+}
 
 for (let i = 0; i < 16; i++) {
   const el = document.createElement('div');
@@ -110,22 +167,52 @@ for (let i = 0; i < 16; i++) {
     <details><summary>Calibrate</summary>
       <div class="cal">
         <input type="text" class="calname" placeholder="Name (e.g. Pan)" maxlength="40">
-        <div class="row">
-          <button data-k="min_us"></button><button data-k="max_us"></button>
+
+        <div class="sec">Jog <small>hold ◀ / ▶ to move toward min / max, release to stop (a click is only a tiny step)</small></div>
+        <div class="row jog">
+          <button class="jl" title="Hold to move toward min (lower µs)">◀</button>
+          <button class="jr" title="Hold to move toward max (higher µs)">▶</button>
+          <select class="jogspd" title="Jog speed">
+            <option value="fine">Fine</option><option value="normal" selected>Normal</option><option value="fast">Fast</option>
+          </select>
+          <span class="jogval"></span>
         </div>
-        <div class="row"><small>Press a value to jump there. Set to current position:</small></div>
-        <div class="row">
-          <button data-set="min_us">Set min (0°)</button><button data-set="max_us">Set max</button>
+
+        <div class="sec">Positions <small>pulse width, 100–3000 µs · type a value, jump to it, or save the current position</small></div>
+        <div class="pos">
+          <div class="ph"><b class="pmin">Min position (0°)</b><span><input type="number" class="minus" min="100" max="3000" step="5"> µs</span></div>
+          <div class="row"><button data-k="min_us">Go to min</button><button data-set="min_us">Set min position</button></div>
         </div>
-        <label>Range between min and max <input type="number" class="range" min="10" max="360" step="5" style="width:70px"> °</label>
-        <label><input type="checkbox" class="inv"> Invert direction</label>
+        <div class="pos">
+          <div class="ph"><b class="pmax">Max position</b><span><input type="number" class="maxus" min="100" max="3000" step="5"> µs</span></div>
+          <div class="row"><button data-k="max_us">Go to max</button><button data-set="max_us">Set max position</button></div>
+        </div>
+        <div class="row opts">
+          <label>Range between min and max <input type="number" class="range" min="10" max="360" step="5"> °</label>
+          <label><input type="checkbox" class="inv"> Invert direction</label>
+        </div>
+
+        <div class="sec">Button press <small>press = 0° (the min position), release = max; Invert direction swaps them</small></div>
+        <div class="trio">
+          <label>Power (ms)<input type="number" class="sp" min="20" max="10000" step="50"></label>
+          <label>Hard-boot hold (ms)<input type="number" class="hb" min="1000" max="60000" step="500"></label>
+          <label>Gap (ms)<input type="number" class="gp" min="0" max="60000" step="100"></label>
+        </div>
+        <div class="row"><small>Hard-boot = hold the button, release, wait the gap, then a short Power press.</small></div>
+        <div class="row">
+          <button class="tpower" title="Test: press for the Power time, then release">Test power</button>
+          <button class="thb" title="Test: long press, release, gap, then the short power press">Test hard-boot</button>
+        </div>
       </div>
     </details>`;
-  grid.appendChild(el);
+  groups[Math.floor(i / 4)].body.appendChild(el);
   const r = {
     i, el, us: 1500, off: false,
     slider: el.querySelector('.slider'), val: el.querySelector('.val'), name: el.querySelector('.name'),
     calname: el.querySelector('.calname'), inv: el.querySelector('.inv'), range: el.querySelector('.range'),
+    speed: el.querySelector('.jogspd'), jogval: el.querySelector('.jogval'),
+    sp: el.querySelector('.sp'), hb: el.querySelector('.hb'), gp: el.querySelector('.gp'), pmax: el.querySelector('.pmax'),
+    minus: el.querySelector('.minus'), maxus: el.querySelector('.maxus'),
   };
   r.slider.addEventListener('input', () => { show(r); send(r); });
   el.querySelector('.off').addEventListener('click', () => api(`/api/channel/${i}`, { duty: 0 }).then(apply));
@@ -137,9 +224,81 @@ for (let i = 0; i < 16; i++) {
   }));
   r.calname.addEventListener('change', () => saveCal(r, { name: r.calname.value.trim() }));
   r.inv.addEventListener('change', () => saveCal(r, { invert: r.inv.checked }));
+  bindJog(el.querySelector('.jl'), r, -1);
+  bindJog(el.querySelector('.jr'), r, +1);
+  r.minus.addEventListener('change', () => saveCal(r, { min_us: parseFloat(r.minus.value) }));
+  r.maxus.addEventListener('change', () => saveCal(r, { max_us: parseFloat(r.maxus.value) }));
+  r.sp.addEventListener('change', () => saveCal(r, { short_press_ms: parseInt(r.sp.value) || 300 }));
+  r.hb.addEventListener('change', () => saveCal(r, { hard_boot_ms: parseInt(r.hb.value) || 12000 }));
+  r.gp.addEventListener('change', () => saveCal(r, { hard_boot_gap_ms: Math.max(0, parseInt(r.gp.value) || 0) }));
+  const testPress = (kind, ms) => api(`/api/channel/${i}/${kind}`, {}).then(() => {
+    status.textContent = `${kind === 'power' ? 'Power press' : 'Hard-boot'} on CH ${i}…`;
+    setTimeout(() => api('/api/state').then(s => { apply(s); status.textContent = ''; }), ms() + 400);
+  }).catch(() => {});
+  el.querySelector('.tpower').addEventListener('click', () => testPress('power', () => cals[i].short_press_ms));
+  el.querySelector('.thb').addEventListener('click', () => testPress('hard-boot', () => cals[i].hard_boot_ms + cals[i].hard_boot_gap_ms + cals[i].short_press_ms));
   r.range.addEventListener('change', () => saveCal(r, { range_deg: parseFloat(r.range.value) || 180 }));
   rows.push(r);
 }
+
+// ---- Jog: hold a button to creep the servo, release to stop ----
+// tap = one small step on press; after 250 ms of holding it moves continuously (µs/s), speeding up to 3x.
+const JOG = { fine: { tap: 2, rate: 60 }, normal: { tap: 10, rate: 250 }, fast: { tap: 25, rate: 700 } };
+const JOG_MIN = 500, JOG_MAX = 2500;
+let jog = null;
+
+function sendJog(j, final) {
+  const v = Math.round(j.us);
+  if (v === j.sent || (j.busy && !final)) return;
+  j.busy = true; j.sent = v;
+  api(`/api/channel/${j.r.i}`, { pulse_us: v })
+    .then(s => { j.r.us = s.channels[j.r.i].pulse_us; j.r.off = false; apply(s); })
+    .catch(() => {})
+    .finally(() => { j.busy = false; });
+}
+
+function startJog(r, dir, btn) {
+  stopJog();
+  const cfg = JOG[r.speed.value];
+  const clamp = v => Math.max(JOG_MIN, Math.min(JOG_MAX, v));
+  const j = jog = { r, btn, us: r.off ? 1500 : r.us, sent: null, busy: false, timer: null };
+  btn.classList.add('held');
+  j.us = clamp(j.us + dir * cfg.tap);
+  sendJog(j);
+  const t0 = performance.now();
+  j.timer = setTimeout(() => {
+    let last = performance.now();
+    j.timer = setInterval(() => {
+      const now = performance.now(), dt = (now - last) / 1000;
+      last = now;
+      j.us = clamp(j.us + dir * cfg.rate * (1 + Math.min(2, (now - t0 - 250) / 1000)) * dt);
+      sendJog(j);
+    }, 40);
+  }, 250);
+}
+
+function stopJog() {
+  if (!jog) return;
+  const j = jog;
+  jog = null;
+  clearTimeout(j.timer); clearInterval(j.timer);
+  j.btn.classList.remove('held');
+  sendJog(j, true);   // make sure the final position is the one where the button was released
+}
+
+function bindJog(btn, r, dir) {
+  btn.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    try { btn.setPointerCapture(e.pointerId); } catch (_) { /* synthetic pointer */ }
+    startJog(r, dir, btn);
+  });
+  ['pointerup', 'pointercancel', 'lostpointercapture', 'blur'].forEach(ev => btn.addEventListener(ev, stopJog));
+  btn.addEventListener('contextmenu', e => e.preventDefault());
+  btn.addEventListener('keydown', e => { if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); startJog(r, dir, btn); } });
+  btn.addEventListener('keyup', e => { if (e.key === ' ' || e.key === 'Enter') stopJog(); });
+}
+window.addEventListener('blur', stopJog);
+document.addEventListener('visibilitychange', () => { if (document.hidden) stopJog(); });
 
 const rangeOf = ch => (cals[ch] && cals[ch].range_deg) || 180;
 
@@ -164,7 +323,7 @@ async function api(path, body, method) {
       let msg = await res.text();
       try {
         const d = JSON.parse(msg).detail;
-        msg = typeof d === 'string' ? d : d.map(x => `${(x.loc || []).slice(1).join('.')}: ${x.msg}`).join('; ');
+        msg = typeof d === 'string' ? d : d.map(x => { const w = (x.loc || []).slice(1).join('.'); return (w ? w + ': ' : '') + x.msg.replace(/^Value error, /, ''); }).join('; ');
       } catch (_) { /* keep raw text */ }
       throw new Error(msg);
     }
@@ -191,28 +350,36 @@ function applyCals() {
     if (document.activeElement !== r.calname) r.calname.value = c.name;
     r.inv.checked = c.invert;
     if (document.activeElement !== r.range) r.range.value = c.range_deg;
-    r.el.querySelectorAll('[data-k]').forEach(b => {
-      b.textContent = b.dataset.k === 'min_us'
-        ? `min ${Math.round(c.min_us)} µs (0°)`
-        : `max ${Math.round(c.max_us)} µs (${c.range_deg}°)`;
-    });
+    if (document.activeElement !== r.minus) r.minus.value = c.min_us;
+    if (document.activeElement !== r.maxus) r.maxus.value = c.max_us;
+    if (document.activeElement !== r.sp) r.sp.value = c.short_press_ms;
+    if (document.activeElement !== r.hb) r.hb.value = c.hard_boot_ms;
+    if (document.activeElement !== r.gp) r.gp.value = c.hard_boot_gap_ms;
+    r.pmax.textContent = `Max position (${c.range_deg}°)`;
   });
   configureSliders();
 }
 
 function saveCal(r, patch) {
   const next = { ...cals[r.i], ...patch };
-  api(`/api/calibration/${r.i}`, next, 'PUT').then(all => { cals = all; applyCals(); api('/api/state').then(apply); });
+  api(`/api/calibration/${r.i}`, next, 'PUT').then(all => { cals = all; applyCals(); api('/api/state').then(apply); })
+    .catch(() => { r.minus.value = cals[r.i].min_us; r.maxus.value = cals[r.i].max_us; r.sp.value = cals[r.i].short_press_ms; r.hb.value = cals[r.i].hard_boot_ms; r.gp.value = cals[r.i].hard_boot_gap_ms; r.range.value = cals[r.i].range_deg; });
 }
 
 let lastState = null;
 function apply(s) {
   lastState = s;
+  groups.forEach(G => {
+    const n = s.channels.slice(4 * G.g, 4 * G.g + 4).filter(c => c.duty > 0).length;
+    G.count.textContent = n ? `${n} of 4 on` : 'all off';
+    G.el.classList.toggle('active', n > 0);
+  });
   document.getElementById('freq').value = Math.round(s.freq * 10) / 10;
   const m = modeSel.value;
   s.channels.forEach(c => {
     const r = rows[c.ch];
     r.us = c.pulse_us; r.off = c.duty === 0;
+    r.jogval.textContent = r.off ? 'off' : `${Math.round(c.pulse_us)} µs`;
     if (document.activeElement === r.slider) return;
     if (m === 'servo') r.slider.value = r.off ? 1500 : c.pulse_us;
     else if (m === 'angle') r.slider.value = r.off ? 0 : c.angle;
